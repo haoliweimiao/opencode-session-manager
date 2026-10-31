@@ -1,5 +1,5 @@
 use opencode_session_manager::runner::{
-    cmdline_has_opencode, opencode_running, run_deletes, SessionDeleter,
+    SessionDeleter, cmdline_has_opencode, opencode_running, run_deletes,
 };
 
 struct MockDeleter<'a> {

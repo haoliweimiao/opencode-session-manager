@@ -83,12 +83,8 @@ pub fn load_sessions(conn: &Connection, project_id: &str) -> Result<Vec<SessionR
                 time_created: r.get(2)?,
                 time_updated: r.get(3)?,
                 cost: r.get(4)?,
-                archived: r
-                    .get::<_, Option<i64>>(5)
-                    .map(|t| t.is_some())?,
-                model: r
-                    .get::<_, Option<String>>(6)?
-                    .unwrap_or_default(),
+                archived: r.get::<_, Option<i64>>(5).map(|t| t.is_some())?,
+                model: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
             })
         })
         .context("query sessions")?;

@@ -93,10 +93,7 @@ fn load_shared_ids_set() {
         .unwrap();
 
     let shared = load_shared_ids(&conn).unwrap();
-    assert_eq!(
-        shared,
-        HashSet::from(["s1".to_string(), "s2".to_string()])
-    );
+    assert_eq!(shared, HashSet::from(["s1".to_string(), "s2".to_string()]));
 }
 
 #[test]
@@ -104,20 +101,31 @@ fn delete_sessions_cascades_children() {
     let mut conn = open_writable(Path::new(":memory:")).unwrap();
     build_schema(&conn).unwrap();
     seed(&conn).unwrap();
-    conn.execute("INSERT INTO message (id, session_id) VALUES ('m1', 's1')", [])
-        .unwrap();
-    conn.execute("INSERT INTO part (id, message_id, session_id) VALUES ('pt1', 'm1', 's1')", [])
-        .unwrap();
-    conn.execute("INSERT INTO message (id, session_id) VALUES ('m2', 's3')", [])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO message (id, session_id) VALUES ('m1', 's1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO part (id, message_id, session_id) VALUES ('pt1', 'm1', 's1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message (id, session_id) VALUES ('m2', 's3')",
+        [],
+    )
+    .unwrap();
 
     let n = delete_sessions(&mut conn, &["s1".to_string(), "s2".to_string()]).unwrap();
     assert_eq!(n, 2);
 
     let messages: i64 = conn
-        .query_row("SELECT COUNT(*) FROM message WHERE session_id = 's1'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM message WHERE session_id = 's1'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(messages, 0);
     let parts: i64 = conn
@@ -159,9 +167,8 @@ fn open_readonly_rejects_writes() {
         .execute("INSERT INTO t VALUES ('y')", [])
         .expect_err("write on readonly connection must fail");
     assert!(
-        err.to_string()
-            .to_lowercase()
-            .contains("readonly") || err.to_string().contains("read-only"),
+        err.to_string().to_lowercase().contains("readonly")
+            || err.to_string().contains("read-only"),
         "unexpected error: {err}"
     );
     let _ = std::fs::remove_file(&path);
