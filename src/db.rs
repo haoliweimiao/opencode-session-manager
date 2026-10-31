@@ -17,6 +17,7 @@ pub struct SessionRow {
     pub cost: f64,
     pub archived: bool,
     pub model: String,
+    pub parent_id: Option<String>,
 }
 
 fn configure(conn: &Connection) -> Result<()> {
@@ -45,7 +46,7 @@ pub fn load_project_counts(conn: &Connection) -> Result<Vec<ProjectCount>> {
         .prepare(
             "SELECT p.id, p.worktree, COUNT(s.id)
              FROM project p
-             LEFT JOIN session s ON s.project_id = p.id
+             LEFT JOIN session s ON s.project_id = p.id AND s.parent_id IS NULL
              GROUP BY p.id, p.worktree
              ORDER BY p.worktree",
         )
@@ -69,7 +70,7 @@ pub fn load_project_counts(conn: &Connection) -> Result<Vec<ProjectCount>> {
 pub fn load_sessions(conn: &Connection, project_id: &str) -> Result<Vec<SessionRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, time_created, time_updated, cost, time_archived, model
+            "SELECT id, title, time_created, time_updated, cost, time_archived, model, parent_id
              FROM session
              WHERE project_id = ?1
              ORDER BY time_updated DESC",
@@ -85,6 +86,7 @@ pub fn load_sessions(conn: &Connection, project_id: &str) -> Result<Vec<SessionR
                 cost: r.get(4)?,
                 archived: r.get::<_, Option<i64>>(5).map(|t| t.is_some())?,
                 model: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                parent_id: r.get::<_, Option<String>>(7)?,
             })
         })
         .context("query sessions")?;

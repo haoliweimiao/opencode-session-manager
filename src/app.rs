@@ -23,6 +23,7 @@ pub enum Message {
     SelectNone,
     FilterChanged(String),
     ToggleBackup,
+    ToggleShowChildren,
     RequestDelete,
     CancelDelete,
     ConfirmDelete,
@@ -213,11 +214,11 @@ impl App {
         let current = self
             .state
             .current_project
-            .take()
+            .clone()
             .filter(|c| projects.iter().any(|p| &p.id == c));
-        self.state = AppState::new(projects, sessions, shared, mode);
-        self.state.current_project =
-            current.or_else(|| self.state.projects.first().map(|p| p.id.clone()));
+        let current = current.or_else(|| projects.first().map(|p| p.id.clone()));
+        let fresh = AppState::new(projects, sessions, shared, mode);
+        self.state.reload_into(fresh, current);
         self.error = None;
     }
 
@@ -384,6 +385,10 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             app.backup = !app.backup;
             Task::none()
         }
+        Message::ToggleShowChildren => {
+            app.state.show_children = !app.state.show_children;
+            Task::none()
+        }
         Message::RequestDelete => {
             let (count, _) = app.state.confirm_summary();
             if count > 0 {
@@ -397,7 +402,7 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
         }
         Message::ConfirmDelete => {
             app.dialog = None;
-            let ids = app.state.selected_ids_in_order();
+            let ids = app.state.delete_order();
             if ids.is_empty() {
                 return Task::none();
             }
@@ -477,6 +482,9 @@ fn view<'a>(app: &'a App) -> Element<'a, Message> {
             .on_input(Message::FilterChanged)
             .width(Fill)
             .padding(6),
+        checkbox(app.state.show_children)
+            .label("显示子会话")
+            .on_toggle(|_| Message::ToggleShowChildren),
         button(text("全选")).on_press(Message::SelectAll),
         button(text("清空")).on_press(Message::SelectNone),
         button(text("刷新")).on_press(Message::Refresh),
@@ -593,6 +601,16 @@ fn session_panel<'a>(app: &'a App) -> Element<'a, Message> {
         } else {
             format!("{} {}", s.title, marker(st))
         };
+        let title = if !app.state.is_child(&id) {
+            let n = app.state.child_count(pid, &id);
+            if n == 0 {
+                title
+            } else {
+                format!("{title}（子×{n}）")
+            }
+        } else {
+            format!("└ {}", title)
+        };
         items.push(
             row![
                 checkbox(checked).on_toggle(move |_| Message::ToggleSession(id.clone())),
@@ -696,12 +714,13 @@ fn confirm_dialog(app: &App) -> Elem<'_> {
             special.push((id.clone(), marker(st).to_string()));
         }
         let (title, worktree) = app.state.lookup(id).unwrap_or((id.clone(), String::new()));
+        let prefix = if app.state.is_child(id) { "(子) " } else { "" };
         let idc = id.clone();
         entries.push(
             row![
                 checkbox(app.state.selected.contains(idc.as_str()))
                     .on_toggle(move |_| Message::ToggleSession(idc.clone())),
-                text(format!("{title}  —  {worktree} {m}", m = marker(st))).width(Fill),
+                text(format!("{prefix}{title}  —  {worktree} {m}", m = marker(st))).width(Fill),
             ]
             .spacing(8)
             .padding(2)
@@ -728,6 +747,16 @@ fn confirm_dialog(app: &App) -> Elem<'_> {
         body = body.push(
             text(format!("⚠ 含特殊会话：{warn}（已分享的删除后链接失效）"))
                 .color(Color::from_rgb(1.0, 0.7, 0.4)),
+        );
+    }
+
+    let orphan = app.state.orphan_warning_count();
+    if orphan > 0 {
+        body = body.push(
+            text(format!(
+                "⚠ {orphan} 个已勾选主会话的子会话被取消：父会话删除后，这些子会话将成为孤儿（parent_id 无外键，不随父自动删除）。"
+            ))
+            .color(Color::from_rgb(1.0, 0.5, 0.5)),
         );
     }
 

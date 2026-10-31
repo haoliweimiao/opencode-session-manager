@@ -13,6 +13,7 @@ fn build_schema(conn: &Connection) -> Result<()> {
          CREATE TABLE session (
            id TEXT PRIMARY KEY,
            project_id TEXT NOT NULL,
+           parent_id TEXT,
            title TEXT NOT NULL,
            model TEXT,
            cost REAL DEFAULT 0,
@@ -63,6 +64,24 @@ fn load_project_counts_aggregates() {
     assert_eq!(p1.sessions, 2);
     let p2 = counts.iter().find(|c| c.id == "p2").unwrap();
     assert_eq!(p2.sessions, 1);
+}
+
+#[test]
+fn load_project_counts_counts_only_main_sessions() {
+    let conn = open_writable(Path::new(":memory:")).unwrap();
+    build_schema(&conn).unwrap();
+    conn.execute_batch(
+        "INSERT INTO project (id, worktree) VALUES ('p1', '/a');
+         INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated)
+           VALUES ('s1', 'p1', NULL, 'main', 100, 300),
+                  ('c1', 'p1', 's1', 'child', 100, 200);",
+    )
+    .unwrap();
+
+    let counts = load_project_counts(&conn).unwrap();
+    assert_eq!(counts.len(), 1);
+    assert_eq!(counts[0].sessions, 1);
+    assert_eq!(counts[0].worktree, "/a");
 }
 
 #[test]

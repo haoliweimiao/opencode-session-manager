@@ -14,6 +14,7 @@
 - `project`：`id` / `worktree`（目录路径，实际工程标识）/ `name`（当前多为 NULL）。
 - `session`：`id` / `project_id`(FK)→`project` 级联 / `title` / `model` / `agent` / `cost` / `tokens_*` / `time_created` / `time_updated` / `time_archived`。
 - `session_id` 上的级联表共 7 张：`session_message` / `message` / `part` / `todo` / `session_input` / `session_context_epoch` / `session_share`。
+- `session.parent_id`：子会话（`task` 派生的 subagent）指向其主会话。**该列无外键、不随父删除自动级联**；实测 2026-10 数据 322 会话中 199 为子会话、深度≤1、子与父同工程同目录。
 - 官方 CLI：`opencode session list`（仅 title/updated，无工程分组）、`opencode session delete <id>`（单条）、`opencode db [query]`、`opencode db path`（输出 DB 路径）。
 - 关键注意：SQLite 默认 `PRAGMA foreign_keys=OFF`，直删连接**必须显式开启**，否则级联不生效、留下孤儿行。
 
@@ -35,6 +36,8 @@
 | 刷新 | 启动加载 + 每次删除后局部刷新 + 手动刷新按钮；无轮询 |
 | 工程级删除 | 不做一键删工程；用工程复选框全选统一走流程 |
 | 进度(降级CLI) | 进度条「已删 x/n」+ 失败项红色单列 + 重试失败项 |
+| 主/子会话 | 默认仅显示主会话（`parent_id` 为空），主会话行标「子×N」；「显示子会话」开关默认关，开启后子会话可见且可单独勾选删除 |
+| 子树删除 | 勾选主会话即并入其整棵子树（子默认全选，确认弹窗内可改）；删除顺序子先父后；确认弹窗对「父勾选但子被取消」显示孤儿警示 |
 
 ## 四、技术栈与依赖（最小集）
 
@@ -85,6 +88,9 @@ src/
 5. 删除后列表局部刷新、计数更新。
 6. 不自动 VACUUM；「回收空间」按钮触发并有磁盘预检。
 7. `cargo build` 无警告（warning-free），`cargo test` 全绿。
+8. 勾选主会话自动并入其全部子会话；确认弹窗内可单独取消子会话并显示孤儿警示。
+9. 默认列表不含子会话；「显示子会话」开关开启后子会话可见且可单独删除（不动主会话）。
+10. 删除顺序子先父后：任意模式中途退出均不产生孤儿（`parent_id` 悬挂）。
 
 ## 八、风险与备注
 
