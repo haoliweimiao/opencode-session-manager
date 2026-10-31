@@ -31,6 +31,10 @@ fn smoke_readonly_load_real_db() {
         running,
         path
     );
-    assert!(projects.len() >= 10, "预期 >=10 工程，实际 {}", projects.len());
+    assert!(
+        projects.len() >= 10,
+        "预期 >=10 工程，实际 {}",
+        projects.len()
+    );
     assert!(total >= 100, "预期 >=100 会话，实际 {}", total);
 }

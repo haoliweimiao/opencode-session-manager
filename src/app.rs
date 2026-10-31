@@ -44,14 +44,16 @@ struct DeleteRun {
 impl DeleteRun {
     fn finished(&self) -> Finish {
         Finish {
-            total: self.total,
+            requested: self.total,
+            deleted: self.done.saturating_sub(self.failures.len()),
             failed: self.failures.clone(),
         }
     }
 }
 
 struct Finish {
-    total: usize,
+    requested: usize,
+    deleted: usize,
     failed: Vec<(String, String)>,
 }
 
@@ -191,6 +193,14 @@ fn marker(st: SessionState) -> &'static str {
     }
 }
 
+pub fn finish_report(requested: usize, deleted: usize, failed: usize) -> String {
+    if failed == 0 {
+        format!("已删除 {deleted}/{requested} 个会话")
+    } else {
+        format!("已删除 {deleted}/{requested}，失败 {failed} 个：")
+    }
+}
+
 impl App {
     fn load(&mut self) {
         let (projects, sessions, shared, mode) = match fetch(&self.db_path) {
@@ -252,6 +262,7 @@ impl App {
 
     fn run_direct(&mut self, ids: Vec<String>) {
         let backup = self.backup;
+        let requested = ids.len();
         let mut failures: Vec<(String, String)> = Vec::new();
         let to_delete: Vec<String> = if backup {
             let dir = App::backup_dir();
@@ -268,15 +279,19 @@ impl App {
         } else {
             ids
         };
-        let total = to_delete.len();
-        if let Err(e) = db::open_writable(&self.db_path)
+        let deleted = match db::open_writable(&self.db_path)
             .and_then(|mut conn| db::delete_sessions(&mut conn, &to_delete))
         {
-            failures.push(("<数据库>".into(), e.to_string()));
-        }
+            Ok(n) => n,
+            Err(e) => {
+                failures.push(("<数据库>".into(), e.to_string()));
+                0
+            }
+        };
         self.state.selected.clear();
         self.finished = Some(Finish {
-            total,
+            requested,
+            deleted,
             failed: failures,
         });
         self.reload();
@@ -641,14 +656,14 @@ fn progress_panel(run: &DeleteRun) -> Elem<'_> {
 }
 
 fn finished_panel(f: &Finish) -> Elem<'_> {
-    let success = f.total - f.failed.len();
     let mut body = column![text("删除完成").size(20)].spacing(10);
     if f.failed.is_empty() {
-        body = body
-            .push(text(format!("已删除 {success} 个会话")).color(Color::from_rgb(0.6, 0.9, 0.6)));
+        body = body.push(
+            text(finish_report(f.requested, f.deleted, 0)).color(Color::from_rgb(0.6, 0.9, 0.6)),
+        );
     } else {
         body = body.push(
-            text(format!("成功 {success} / 失败 {} 个：", f.failed.len()))
+            text(finish_report(f.requested, f.deleted, f.failed.len()))
                 .color(Color::from_rgb(1.0, 0.6, 0.6)),
         );
         let fail_rows: Vec<Elem> = f
