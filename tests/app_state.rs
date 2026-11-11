@@ -1,69 +1,55 @@
-use opencode_session_manager::app::state::{AppState, RunState, SessionState};
-use opencode_session_manager::db::{ProjectCount, SessionRow};
+use opencode_session_manager::api::{ProjectCount, SessionRow};
+use opencode_session_manager::app::state::{AppState, SessionState};
 use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
-}
 
 fn project(id: &str, sessions: usize) -> ProjectCount {
     ProjectCount {
         id: id.to_string(),
-        worktree: format!("/{}", id),
+        worktree: format!("/{id}"),
         sessions,
     }
 }
 
-fn row(id: &str, title: &str, updated: i64) -> SessionRow {
-    row_arch(id, title, updated, false)
-}
-
-fn row_child(id: &str, title: &str, updated: i64, parent: &str) -> SessionRow {
-    let mut r = row_arch(id, title, updated, false);
-    r.parent_id = Some(parent.to_string());
-    r
-}
-
-fn row_arch(id: &str, title: &str, updated: i64, archived: bool) -> SessionRow {
+fn row_for(pid: &str, id: &str, title: &str, updated: i64) -> SessionRow {
     SessionRow {
         id: id.to_string(),
+        project_id: pid.to_string(),
         title: title.to_string(),
         time_created: 0,
         time_updated: updated,
         cost: 0.0,
-        archived,
         model: "m".to_string(),
         parent_id: None,
     }
 }
 
-fn base_state(running: bool) -> AppState {
+fn row(pid: &str, id: &str, title: &str, updated: i64) -> SessionRow {
+    row_for(pid, id, title, updated)
+}
+
+fn row_child(pid: &str, id: &str, title: &str, updated: i64, parent: &str) -> SessionRow {
+    let mut r = row_for(pid, id, title, updated);
+    r.parent_id = Some(parent.to_string());
+    r
+}
+
+fn base_state() -> AppState {
     let projects = vec![project("p1", 2), project("p2", 1)];
     let mut sessions = HashMap::new();
     sessions.insert(
         "p1".to_string(),
-        vec![row("s1", "alpha", 100), row("s2", "beta", 90)],
+        vec![
+            row("p1", "s1", "alpha", 100),
+            row("p1", "s2", "beta", 90),
+        ],
     );
-    sessions.insert("p2".to_string(), vec![row("s3", "gamma", 80)]);
-    AppState::new(
-        projects,
-        sessions,
-        HashSet::new(),
-        if running {
-            RunState::Running
-        } else {
-            RunState::NotRunning
-        },
-    )
+    sessions.insert("p2".to_string(), vec![row("p2", "s3", "gamma", 80)]);
+    AppState::new(projects, sessions, HashSet::new())
 }
 
 #[test]
 fn toggle_session_updates_selection() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     s.toggle_session("s1");
     assert!(s.selected.contains("s1"));
     assert_eq!(s.selected.len(), 1);
@@ -74,7 +60,7 @@ fn toggle_session_updates_selection() {
 
 #[test]
 fn toggle_project_all_selects_and_deselects() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     s.toggle_project_all("p1");
     assert_eq!(
         s.selected,
@@ -89,7 +75,7 @@ fn toggle_project_all_selects_and_deselects() {
 
 #[test]
 fn select_all_cross_projects() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     s.select_all();
     assert_eq!(
         s.selected,
@@ -101,7 +87,7 @@ fn select_all_cross_projects() {
 
 #[test]
 fn select_all_respects_filter() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     s.filter = "AL".to_string();
     s.select_all();
     assert_eq!(s.selected, HashSet::from(["s1".to_string()]));
@@ -109,7 +95,7 @@ fn select_all_respects_filter() {
 
 #[test]
 fn filtered_sessions_matches_title() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     assert_eq!(s.filtered_sessions("p1").len(), 2);
     s.filter = "beta".to_string();
     let f = s.filtered_sessions("p1");
@@ -124,13 +110,13 @@ fn tree_state() -> AppState {
     sessions.insert(
         "p1".to_string(),
         vec![
-            row("m1", "主会话一", 100),
-            row_child("c1", "子会话一", 90, "m1"),
-            row_child("c2", "子会话二", 80, "m1"),
-            row("m2", "主会话二", 70),
+            row("p1", "m1", "主会话一", 100),
+            row_child("p1", "c1", "子会话一", 90, "m1"),
+            row_child("p1", "c2", "子会话二", 80, "m1"),
+            row("p1", "m2", "主会话二", 70),
         ],
     );
-    AppState::new(projects, sessions, HashSet::new(), RunState::NotRunning)
+    AppState::new(projects, sessions, HashSet::new())
 }
 
 #[test]
@@ -253,7 +239,7 @@ fn select_all_with_children_shown_counts_each_session_once() {
 
 #[test]
 fn confirm_summary_aggregates_projects() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     s.toggle_session("s1");
     s.toggle_session("s3");
     let (count, projects) = s.confirm_summary();
@@ -262,34 +248,27 @@ fn confirm_summary_aggregates_projects() {
 }
 
 #[test]
-fn state_of_marks_shared_active_archived() {
-    let now = now_ms();
-    let mut projects = vec![project("p1", 4)];
-    projects[0].sessions = 4;
+fn state_of_marks_active_ids_only() {
+    let projects = vec![project("p1", 2)];
     let mut sessions = HashMap::new();
     sessions.insert(
         "p1".to_string(),
         vec![
-            row_arch("s_shared_active", "ss", now, false),
-            row_arch("s_active", "a", now, false),
-            row_arch("s_arch", "ar", 100, true),
-            row("s_normal", "n", 100),
+            row("p1", "s_active", "a", 100),
+            row("p1", "s_normal", "n", 100),
         ],
     );
-    let mut shared = HashSet::new();
-    shared.insert("s_shared_active".to_string());
-    shared.insert("s_shared_only".to_string());
-    let s = AppState::new(projects, sessions, shared, RunState::Running);
-    assert_eq!(s.state_of("s_shared_active"), SessionState::Shared);
+    let mut active = HashSet::new();
+    active.insert("s_active".to_string());
+    let s = AppState::new(projects, sessions, active);
     assert_eq!(s.state_of("s_active"), SessionState::Active);
-    assert_eq!(s.state_of("s_arch"), SessionState::Archived);
     assert_eq!(s.state_of("s_normal"), SessionState::Normal);
-    assert_eq!(s.state_of("s_shared_only"), SessionState::Shared);
+    assert_eq!(s.state_of("missing"), SessionState::Normal);
 }
 
 #[test]
 fn selected_ids_in_order_follows_project_and_row_order() {
-    let mut s = base_state(false);
+    let mut s = base_state();
     s.toggle_session("s3");
     s.toggle_session("s1");
     let ids = s.selected_ids_in_order();
@@ -298,7 +277,7 @@ fn selected_ids_in_order_follows_project_and_row_order() {
 
 #[test]
 fn lookup_finds_session_title_and_project() {
-    let s = base_state(false);
+    let s = base_state();
     let (title, worktree) = s.lookup("s2").unwrap();
     assert_eq!(title, "beta");
     assert_eq!(worktree, "/p1");

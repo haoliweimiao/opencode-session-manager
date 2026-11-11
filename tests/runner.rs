@@ -1,6 +1,4 @@
-use opencode_session_manager::runner::{
-    SessionDeleter, cmdline_has_opencode, opencode_running, run_deletes,
-};
+use opencode_session_manager::runner::{SessionDeleter, run_deletes};
 
 struct MockDeleter<'a> {
     fail: &'a [&'a str],
@@ -14,21 +12,6 @@ impl SessionDeleter for MockDeleter<'_> {
             Ok(())
         }
     }
-}
-
-#[test]
-fn opencode_running_detects() {
-    assert!(opencode_running(&|| true));
-    assert!(!opencode_running(&|| false));
-}
-
-#[test]
-fn cmdline_token_matcher_finds_opencode_not_self() {
-    assert!(cmdline_has_opencode("node /x/opencode/dist/index.js foo"));
-    assert!(cmdline_has_opencode("opencode run hello world"));
-    assert!(cmdline_has_opencode("/usr/bin/opencode"));
-    assert!(!cmdline_has_opencode("/x/opencode-session-manager --help"));
-    assert!(!cmdline_has_opencode("/x/opencode_session_manager foo"));
 }
 
 #[test]

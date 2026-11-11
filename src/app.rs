@@ -1,18 +1,20 @@
 pub mod state;
 
-use crate::db;
-use crate::runner;
+use crate::api;
 use iced::widget::{
     button, checkbox, column, container, progress_bar, row, scrollable, text, text_input,
 };
 use iced::{Background, Center, Color, Element, Fill, FillPortion, Shrink, Size, Task, Theme};
-use state::{AppState, RunState, SessionState};
+use state::{AppState, SessionState};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type Elem<'a> = Element<'a, Message>;
+
+/// 会话列表截断上限（v2 `/api/session` 一次返回全部，此值仅作容积保护）。
+const SESSION_LIMIT: usize = 5000;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -60,7 +62,6 @@ struct Finish {
 
 pub struct App {
     state: AppState,
-    db_path: PathBuf,
     error: Option<String>,
     dialog: Option<bool>,
     delete: Option<DeleteRun>,
@@ -76,19 +77,9 @@ pub fn run() -> iced::Result {
 }
 
 fn boot() -> (App, Task<Message>) {
-    let (db_path, error) = match resolve_db_path() {
-        Ok(p) => (p, None),
-        Err(e) => (PathBuf::from("."), Some(e)),
-    };
     let mut app = App {
-        state: AppState::new(
-            Vec::new(),
-            HashMap::new(),
-            HashSet::new(),
-            RunState::NotRunning,
-        ),
-        db_path,
-        error,
+        state: AppState::new(Vec::new(), HashMap::new(), HashSet::new()),
+        error: None,
         dialog: None,
         delete: None,
         finished: None,
@@ -98,47 +89,15 @@ fn boot() -> (App, Task<Message>) {
     (app, Task::none())
 }
 
-fn resolve_db_path() -> Result<PathBuf, String> {
-    if let Ok(out) = Command::new("opencode").args(["db", "path"]).output() {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !s.is_empty() {
-                return Ok(PathBuf::from(s));
-            }
-        }
-    }
-    if let Some(dirs) = directories::ProjectDirs::from("", "", "opencode") {
-        return Ok(dirs.data_local_dir().join("opencode.db"));
-    }
-    Err("无法定位 opencode 数据库路径".into())
-}
-
-fn fetch(
-    db_path: &Path,
-) -> Result<
+fn fetch() -> Result<
     (
-        Vec<db::ProjectCount>,
-        HashMap<String, Vec<db::SessionRow>>,
+        Vec<api::ProjectCount>,
+        HashMap<String, Vec<api::SessionRow>>,
         HashSet<String>,
-        RunState,
     ),
     String,
 > {
-    let conn = db::open_readonly(db_path).map_err(|e| e.to_string())?;
-    let projects = db::load_project_counts(&conn).map_err(|e| e.to_string())?;
-    let shared = db::load_shared_ids(&conn).map_err(|e| e.to_string())?;
-    let mut sessions = HashMap::new();
-    for p in &projects {
-        let rows = db::load_sessions(&conn, &p.id).map_err(|e| e.to_string())?;
-        sessions.insert(p.id.clone(), rows);
-    }
-    let running = runner::opencode_running(&runner::pgrep_detect);
-    let mode = if running {
-        RunState::Running
-    } else {
-        RunState::NotRunning
-    };
-    Ok((projects, sessions, shared, mode))
+    api::load(&api::run_opencode_api, SESSION_LIMIT).map_err(|e| e.to_string())
 }
 
 fn now_ms() -> i64 {
@@ -162,12 +121,6 @@ fn rel_time(ms: i64) -> String {
 }
 
 fn fmt_model(s: &str) -> String {
-    if let Some(i) = s.find("\"id\":\"") {
-        let start = i + 6;
-        if let Some(j) = s[start..].find('"') {
-            return s[start..start + j].to_string();
-        }
-    }
     if s.is_empty() {
         "—".into()
     } else {
@@ -179,7 +132,7 @@ fn short_path(p: &str) -> String {
     if p.len() <= 42 {
         p.to_string()
     } else {
-        let tail: Vec<&str> = p.rsplitn(3, '/').collect();
+        let tail: Vec<&str> = p.rsplitn(3, ['/', '\\']).collect();
         let parts: Vec<&str> = tail.iter().rev().skip(1).take(2).cloned().collect();
         format!("…/{}", parts.join("/"))
     }
@@ -188,9 +141,7 @@ fn short_path(p: &str) -> String {
 fn marker(st: SessionState) -> &'static str {
     match st {
         SessionState::Normal => "",
-        SessionState::Shared => "[已分享]",
         SessionState::Active => "[进行中]",
-        SessionState::Archived => "[已归档]",
     }
 }
 
@@ -204,7 +155,7 @@ pub fn finish_report(requested: usize, deleted: usize, failed: usize) -> String 
 
 impl App {
     fn load(&mut self) {
-        let (projects, sessions, shared, mode) = match fetch(&self.db_path) {
+        let (projects, sessions, active) = match fetch() {
             Ok(v) => v,
             Err(e) => {
                 self.error = Some(e);
@@ -217,7 +168,7 @@ impl App {
             .clone()
             .filter(|c| projects.iter().any(|p| &p.id == c));
         let current = current.or_else(|| projects.first().map(|p| p.id.clone()));
-        let fresh = AppState::new(projects, sessions, shared, mode);
+        let fresh = AppState::new(projects, sessions, active);
         self.state.reload_into(fresh, current);
         self.error = None;
     }
@@ -248,54 +199,16 @@ impl App {
     fn export_backup(&self, id: &str, dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let out = Command::new("opencode")
-            .args(["export", id])
+            .args(["session", "export", id])
             .output()
             .map_err(|e| e.to_string())?;
         if !out.status.success() {
-            return Err(format!("opencode export 失败：退出 {}", out.status));
+            return Err(format!("opencode session export 失败：退出 {}", out.status));
         }
-        let data = String::from_utf8_lossy(&out.stdout);
-        if data.trim().is_empty() {
-            return Err("opencode export 输出为空（会话可能已不存在）".into());
+        if out.stdout.is_empty() {
+            return Err("opencode session export 输出为空（会话可能已不存在）".into());
         }
-        std::fs::write(dir.join(format!("{id}.json")), data.as_bytes()).map_err(|e| e.to_string())
-    }
-
-    fn run_direct(&mut self, ids: Vec<String>) {
-        let backup = self.backup;
-        let requested = ids.len();
-        let mut failures: Vec<(String, String)> = Vec::new();
-        let to_delete: Vec<String> = if backup {
-            let dir = App::backup_dir();
-            ids.iter()
-                .filter(|id| match self.export_backup(id, &dir) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        failures.push(((*id).clone(), e));
-                        false
-                    }
-                })
-                .cloned()
-                .collect()
-        } else {
-            ids
-        };
-        let deleted = match db::open_writable(&self.db_path)
-            .and_then(|mut conn| db::delete_sessions(&mut conn, &to_delete))
-        {
-            Ok(n) => n,
-            Err(e) => {
-                failures.push(("<数据库>".into(), e.to_string()));
-                0
-            }
-        };
-        self.state.selected.clear();
-        self.finished = Some(Finish {
-            requested,
-            deleted,
-            failed: failures,
-        });
-        self.reload();
+        std::fs::write(dir.join(format!("{id}.json")), &out.stdout).map_err(|e| e.to_string())
     }
 
     fn tick_cli(&mut self) -> Task<Message> {
@@ -406,21 +319,16 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             if ids.is_empty() {
                 return Task::none();
             }
-            if app.state.mode == RunState::Running {
-                let total = ids.len();
-                app.delete = Some(DeleteRun {
-                    ids,
-                    next: 0,
-                    total,
-                    done: 0,
-                    failures: Vec::new(),
-                    backup: app.backup,
-                });
-                Task::done(Message::DeleteNext)
-            } else {
-                app.run_direct(ids);
-                Task::none()
-            }
+            let total = ids.len();
+            app.delete = Some(DeleteRun {
+                ids,
+                next: 0,
+                total,
+                done: 0,
+                failures: Vec::new(),
+                backup: app.backup,
+            });
+            Task::done(Message::DeleteNext)
         }
         Message::DeleteNext => app.tick_cli(),
         Message::RetryFailed => {
@@ -433,21 +341,16 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
                 return Task::none();
             }
             app.finished = None;
-            if app.state.mode == RunState::Running {
-                let total = failed.len();
-                app.delete = Some(DeleteRun {
-                    ids: failed,
-                    next: 0,
-                    total,
-                    done: 0,
-                    failures: Vec::new(),
-                    backup: app.backup,
-                });
-                Task::done(Message::DeleteNext)
-            } else {
-                app.run_direct(failed);
-                Task::none()
-            }
+            let total = failed.len();
+            app.delete = Some(DeleteRun {
+                ids: failed,
+                next: 0,
+                total,
+                done: 0,
+                failures: Vec::new(),
+                backup: app.backup,
+            });
+            Task::done(Message::DeleteNext)
         }
         Message::CloseFinished => {
             app.finished = None;
@@ -461,20 +364,15 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
 }
 
 fn view<'a>(app: &'a App) -> Element<'a, Message> {
-    let banner = if app.state.mode == RunState::Running {
-        container(
-            text("opencode 正在运行：删除将改为逐条 CLI 执行（较慢），列表可能不同步")
-                .color(Color::from_rgb(1.0, 0.75, 0.3)),
-        )
-        .padding(6)
-        .width(Fill)
-    } else {
-        container(
-            text("opencode 未运行：删除将单事务直删（秒级）").color(Color::from_rgb(0.6, 0.9, 0.6)),
-        )
-        .padding(6)
-        .width(Fill)
-    };
+    let banner = container(
+        text(format!(
+            "opencode 数据源：v2 API · 活动会话 {} 个",
+            app.state.active.len()
+        ))
+        .color(Color::from_rgb(0.6, 0.85, 1.0)),
+    )
+    .padding(6)
+    .width(Fill);
 
     let selected = app.state.selected.len();
     let toolbar = row![
@@ -745,7 +643,7 @@ fn confirm_dialog(app: &App) -> Elem<'_> {
             .collect::<Vec<_>>()
             .join("；");
         body = body.push(
-            text(format!("⚠ 含特殊会话：{warn}（已分享的删除后链接失效）"))
+            text(format!("⚠ 含进行中会话：{warn}（活动会话删除需谨慎）"))
                 .color(Color::from_rgb(1.0, 0.7, 0.4)),
         );
     }
@@ -754,7 +652,7 @@ fn confirm_dialog(app: &App) -> Elem<'_> {
     if orphan > 0 {
         body = body.push(
             text(format!(
-                "⚠ {orphan} 个已勾选主会话的子会话被取消：父会话删除后，这些子会话将成为孤儿（parent_id 无外键，不随父自动删除）。"
+                "⚠ 仍有 {orphan} 个子会话未勾选：删除父会话时 v2 将级联删除这些子会话。"
             ))
             .color(Color::from_rgb(1.0, 0.5, 0.5)),
         );
@@ -762,7 +660,7 @@ fn confirm_dialog(app: &App) -> Elem<'_> {
 
     body = body.push(
         checkbox(app.backup)
-            .label("删除前导出备份到默认目录（opencode export）")
+            .label("删除前导出备份到默认目录（opencode session export）")
             .on_toggle(|_| Message::ToggleBackup),
     );
 

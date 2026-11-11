@@ -1,56 +1,35 @@
-use crate::db::{ProjectCount, SessionRow};
+use crate::api::{ProjectCount, SessionRow};
 use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-const ACTIVE_WINDOW_MS: i64 = 5 * 60 * 1000;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RunState {
-    Running,
-    NotRunning,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SessionState {
     Normal,
-    Shared,
     Active,
-    Archived,
 }
 
 pub struct AppState {
     pub projects: Vec<ProjectCount>,
     pub sessions: HashMap<String, Vec<SessionRow>>,
-    pub shared: HashSet<String>,
+    pub active: HashSet<String>,
     pub selected: HashSet<String>,
     pub filter: String,
     pub current_project: Option<String>,
-    pub mode: RunState,
     pub show_children: bool,
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 impl AppState {
     pub fn new(
         projects: Vec<ProjectCount>,
         sessions: HashMap<String, Vec<SessionRow>>,
-        shared: HashSet<String>,
-        mode: RunState,
+        active: HashSet<String>,
     ) -> Self {
         AppState {
             projects,
             sessions,
-            shared,
+            active,
             selected: HashSet::new(),
             filter: String::new(),
             current_project: None,
-            mode,
             show_children: false,
         }
     }
@@ -289,21 +268,10 @@ impl AppState {
     }
 
     pub fn state_of(&self, id: &str) -> SessionState {
-        if self.shared.contains(id) {
-            return SessionState::Shared;
+        if self.active.contains(id) {
+            SessionState::Active
+        } else {
+            SessionState::Normal
         }
-        for rows in self.sessions.values() {
-            if let Some(row) = rows.iter().find(|r| r.id == id) {
-                if self.mode == RunState::Running && now_ms() - row.time_updated <= ACTIVE_WINDOW_MS
-                {
-                    return SessionState::Active;
-                }
-                if row.archived {
-                    return SessionState::Archived;
-                }
-                return SessionState::Normal;
-            }
-        }
-        SessionState::Normal
     }
 }

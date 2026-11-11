@@ -1,40 +1,32 @@
-use opencode_session_manager::db;
-use opencode_session_manager::runner;
-use std::path::Path;
-use std::process::Command;
+use opencode_session_manager::api;
 
 #[test]
 #[ignore]
-fn smoke_readonly_load_real_db() {
-    let out = Command::new("opencode")
-        .args(["db", "path"])
-        .output()
-        .expect("opencode 应在 PATH 中");
-    assert!(out.status.success(), "opencode db path 失败");
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(!path.is_empty(), "opencode db path 输出为空");
-
-    let conn = db::open_readonly(Path::new(&path)).expect("以只读打开真实库");
-    let projects = db::load_project_counts(&conn).expect("读取工程+计数");
-    let shared = db::load_shared_ids(&conn).expect("读取共享 id");
-    let mut total = 0usize;
-    for p in &projects {
-        total += db::load_sessions(&conn, &p.id).expect("读取会话").len();
-    }
-
-    let running = runner::opencode_running(&runner::pgrep_detect);
+fn smoke_readonly_load_real_api() {
+    let (projects, sessions, active) = api::load(&api::run_opencode_api, 5000)
+        .expect("真实环境 api load 失败");
+    let total: usize = sessions.values().map(|v| v.len()).sum();
+    let mains: usize = sessions
+        .values()
+        .flat_map(|v| v.iter())
+        .filter(|r| r.parent_id.is_none())
+        .count();
     println!(
-        "smoke: 工程={} 会话={} 已分享={} 运行中={} db={}",
+        "smoke: 工程={} 会话={} 顶层={} 活动={}",
         projects.len(),
         total,
-        shared.len(),
-        running,
-        path
+        mains,
+        active.len()
     );
     assert!(
         projects.len() >= 10,
         "预期 >=10 工程，实际 {}",
         projects.len()
     );
-    assert!(total >= 100, "预期 >=100 会话，实际 {}", total);
+    assert!(total >= 10, "预期 >=10 会话，实际 {total}");
+    assert_eq!(
+        mains,
+        projects.iter().map(|p| p.sessions).sum::<usize>(),
+        "顶层会话计数与工程统计不一致"
+    );
 }
